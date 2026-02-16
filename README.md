@@ -21,14 +21,36 @@ Environment variables:
 - `OVN_BRIDGE` (default: `br-int`)
 - `OVS_SOCKET` (default: `unix:/var/run/openvswitch/db.sock`)
 
-## Build
+## Installation
+Build the binary:
 ```bash
 go build -o docker-network-ovn
 ```
 
+Install the binary to PATH:
+```bash
+ln docker-network-ovn /usr/local/bin/
+```
+
+Install the systemd socket unit:
+```bash
+sudo ln -s /root/docker-network-ovn/systemd/docker-network-ovn.socket /etc/systemd/system/docker-network-ovn.socket
+```
+
+Install the systemd service unit:
+```bash
+sudo ln -s /root/docker-network-ovn/systemd/docker-network-ovn.service /etc/systemd/system/docker-network-ovn.service
+```
+
+Create or edit `/etc/default/docker-network-ovn` to set environment variables:
+```
+OVN_BRIDGE=br-int
+OVS_SOCKET=unix:/var/run/openvswitch/db.sock
+```
+
 ## Run (development)
 ```bash
-sudo ./docker-network-ovn
+sudo go run .
 ```
 
 The plugin listens on `/run/docker/plugins/ovn.sock`.
