@@ -1,0 +1,13 @@
+Package: docker-network-ovn
+Version: 0.1.0-1
+Architecture: amd64
+Maintainer: Docker Network OVN Maintainers <maintainers@example.com>
+Installed-Size: 7944
+Depends: libc6 (>= 2.34), openvswitch-common, docker.io
+Section: net
+Priority: optional
+Homepage: https://github.com/henrybarreto/docker-network-ovn
+Description: OVN-based Docker network driver plugin
+ Docker network plugin that provisions OVN logical switches and ports,
+ wiring container veth pairs into OVS. Enables advanced networking
+ capabilities using Open Virtual Network (OVN).

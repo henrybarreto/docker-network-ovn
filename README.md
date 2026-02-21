@@ -21,28 +21,18 @@ Environment variables:
 - `OVN_BRIDGE` (default: `br-int`)
 - `OVS_SOCKET` (default: `unix:/var/run/openvswitch/db.sock`)
 
-## Installation
-Build the binary:
+### Debian/Ubuntu package (recommended)
+
+Download the latest `.deb` from the [releases page](https://github.com/henrybarreto/docker-network-ovn/releases) and install it:
+
 ```bash
-go build -o docker-network-ovn
+sudo dpkg -i docker-network-ovn_0.1.0-1_amd64.deb
 ```
 
-Install the binary to PATH:
-```bash
-ln docker-network-ovn /usr/local/bin/
-```
+### Configuration
 
-Install the systemd socket unit:
-```bash
-sudo ln -s /root/docker-network-ovn/systemd/docker-network-ovn.socket /etc/systemd/system/docker-network-ovn.socket
-```
+Create or edit `/etc/default/docker-network-ovn`:
 
-Install the systemd service unit:
-```bash
-sudo ln -s /root/docker-network-ovn/systemd/docker-network-ovn.service /etc/systemd/system/docker-network-ovn.service
-```
-
-Create or edit `/etc/default/docker-network-ovn` to set environment variables:
 ```
 OVN_BRIDGE=br-int
 OVS_SOCKET=unix:/var/run/openvswitch/db.sock

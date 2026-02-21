@@ -1,0 +1,25 @@
+Source: docker-network-ovn
+Section: net
+Priority: optional
+Maintainer: Docker Network OVN Maintainers <contato@henrybarreto.dev>
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ golang
+Standards-Version: 4.6.2
+Homepage: https://github.com/henrybarreto/docker-network-ovn
+
+Package: docker-network-ovn
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ openvswitch-common,
+ containerd.io,
+ docker-ce,
+ docker-ce-cli,
+ docker-ce-rootless-extras
+Description: OVN-based Docker network driver plugin
+ Docker network plugin that provisions OVN logical switches and ports,
+ wiring container veth pairs into OVS. Enables advanced networking
+ capabilities using Open Virtual Network (OVN).

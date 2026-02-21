@@ -1,0 +1,13 @@
+Package: docker-network-ovn-dbgsym
+Package-Type: ddeb
+Source: docker-network-ovn
+Version: 0.1.0-1
+Auto-Built-Package: debug-symbols
+Architecture: amd64
+Maintainer: Docker Network OVN Maintainers <maintainers@example.com>
+Installed-Size: 3509
+Depends: docker-network-ovn (= 0.1.0-1)
+Section: debug
+Priority: optional
+Description: debug symbols for docker-network-ovn
+Build-Ids: c1440bf3cb9cb6241298cfa29a2811c262ac7fd9

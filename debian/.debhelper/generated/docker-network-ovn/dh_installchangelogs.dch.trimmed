@@ -1,0 +1,8 @@
+docker-network-ovn (0.1.0-1) focal; urgency=medium
+
+  * Initial release
+  * OVN logical switch provisioning for Docker networks
+  * OVS veth interface wiring support
+  * OVSDB/OVN NB database integration
+
+ -- Docker Network OVN Maintainers <maintainers@example.com>  Thu, 20 Feb 2026 00:00:00 +0000
