@@ -1,6 +1,6 @@
 module docker-network-ovn
 
-go 1.24.9
+go 1.22
 
 require (
 	github.com/docker/go-plugins-helpers v0.0.0-20240701071450-45e2431495c8
