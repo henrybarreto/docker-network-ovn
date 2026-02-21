@@ -1,12 +1,12 @@
 [Unit]
 Description=Docker Network OVN plugin
 Before=docker.service
-After=network.target docker-network-ovn.socket
-Requires=docker-network-ovn.socket docker.service
+After=network.target
+Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/docker-network-ovn
+ExecStart=/usr/bin/docker-network-ovn
 EnvironmentFile=/etc/default/docker-network-ovn
 Restart=on-failure
 RestartSec=2s

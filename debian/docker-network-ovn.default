@@ -1,0 +1,8 @@
+# Configuration for docker-network-ovn
+# See /usr/share/doc/docker-network-ovn/README.md for details.
+
+# OVS integration bridge name
+OVN_BRIDGE=br-int
+
+# OVS database socket path
+OVS_SOCKET=unix:/var/run/openvswitch/db.sock

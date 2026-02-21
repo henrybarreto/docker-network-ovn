@@ -1,0 +1,3 @@
+docker-network-ovn-dbgsym_0.1.0-1_amd64.ddeb debug optional automatic=yes
+docker-network-ovn_0.1.0-1_amd64.buildinfo net optional
+docker-network-ovn_0.1.0-1_amd64.deb net optional

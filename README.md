@@ -11,49 +11,53 @@ Docker network plugin that provisions OVN logical switches and ports, wiring con
 - Uses OVSDB/OVN NB database connections discovered from OVS.
 
 ## Requirements
-- Linux host with OVS and OVN running.
-- Docker with plugin support.
+- Linux host with OVS, OVN Host and a connection to OVN Central.
+- Docker CE with plugin support.
 - OVSDB socket accessible at `/var/run/openvswitch/db.sock` (or custom).
 - OVN NB socket available via OVS external IDs or default `/var/run/ovn/ovnnb_db.sock`.
 
+
 ## Configuration
-Environment variables:
-- `OVN_BRIDGE` (default: `br-int`)
-- `OVS_SOCKET` (default: `unix:/var/run/openvswitch/db.sock`)
 
-## Installation
-Build the binary:
-```bash
-go build -o docker-network-ovn
-```
+Create or edit `/etc/default/docker-network-ovn`:
 
-Install the binary to PATH:
-```bash
-ln docker-network-ovn /usr/local/bin/
-```
-
-Install the systemd socket unit:
-```bash
-sudo ln -s /root/docker-network-ovn/systemd/docker-network-ovn.socket /etc/systemd/system/docker-network-ovn.socket
-```
-
-Install the systemd service unit:
-```bash
-sudo ln -s /root/docker-network-ovn/systemd/docker-network-ovn.service /etc/systemd/system/docker-network-ovn.service
-```
-
-Create or edit `/etc/default/docker-network-ovn` to set environment variables:
 ```
 OVN_BRIDGE=br-int
 OVS_SOCKET=unix:/var/run/openvswitch/db.sock
 ```
 
-## Run (development)
+## Development
+
 ```bash
 sudo go run .
 ```
 
 The plugin listens on `/run/docker/plugins/ovn.sock`.
+
+## Packages
+
+## Debian/Ubuntu
+
+The repository has the instructions to build `.deb` package, but it is worth to
+notice that the debian package depends on official [Docker CE](https://docs.docker.com/engine/install/debian/) ones.
+
+Install build depenedencies:
+
+```bash
+sudo apt build-dep .
+```
+
+Build the pacakge:
+
+```bash
+debuild -us -uc
+```
+
+Install the pacakge:
+
+```bash
+sudo apt install ../docker-network-ovn_0.1.0-1_amd64.deb
+```
 
 ## Example
 

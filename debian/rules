@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+
+export GO111MODULE := on
+export GOPROXY := https://proxy.golang.org,direct
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	go build -buildmode=pie -ldflags="-extldflags=-Wl,-z,relro,-z,now" -o docker-network-ovn -v
+
+override_dh_auto_install:
+	install -D -m 0755 docker-network-ovn debian/docker-network-ovn/usr/bin/docker-network-ovn
+
+override_dh_installsystemd:
+	dh_installsystemd docker-network-ovn.service
+
+override_dh_auto_test:
+
+override_dh_dwz:
