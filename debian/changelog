@@ -1,3 +1,11 @@
+docker-network-ovn (0.1.1-1) unstable; urgency=medium
+
+  * Bug fixes
+  * Code refactoring
+  * Performance improvements
+
+ -- Docker Network OVN Maintainers <contato@henrybarreto.dev>  Mon, 24 Feb 2026 00:00:00 +0000
+
 docker-network-ovn (0.1.0-1) unstable; urgency=medium
 
   * Initial release

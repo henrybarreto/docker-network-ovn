@@ -2,7 +2,7 @@
 
 Docker network plugin that provisions OVN logical switches and ports, wiring container veth pairs into OVS.
 
-**Version:** 0.1.0
+**Version:** 0.1.1
 
 ## Features
 - Creates OVN logical switches per Docker network.
@@ -56,7 +56,7 @@ debuild -us -uc
 Install the pacakge:
 
 ```bash
-sudo apt install ../docker-network-ovn_0.1.0-1_amd64.deb
+sudo apt install ../docker-network-ovn_0.1.1-1_amd64.deb
 ```
 
 ## Example
@@ -72,5 +72,5 @@ docker run --rm -it --net=ovn0 alpine /bin/sh
 ```
 
 ## Notes
-- This is an early 0.1.0 release; expect breaking changes.
+- This is an early 0.1.1 release; expect breaking changes.
 - External connectivity hooks are stubbed for now.
