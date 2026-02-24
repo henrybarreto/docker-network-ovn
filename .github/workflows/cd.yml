@@ -1,0 +1,72 @@
+name: CD
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    name: Build .deb Package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update -y
+          sudo apt build-dep --no-install-recommends .
+
+      - name: Build .deb package for ${{ matrix.arch }}
+        run: |
+          dpkg-buildpackage -us -uc -b --build-by="GitHub Actions"
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p build-artifacts
+          mv ../*.deb build-artifacts/ || true
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: build-artifacts/*.deb
+          retention-days: 1
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    needs: build-deb
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: debs
+
+      - name: Move .deb files to root
+        run: |
+          mkdir -p release_debs
+          find debs -name "*.deb" -exec mv {} release_debs/ \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_debs/*.deb
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
