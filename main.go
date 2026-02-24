@@ -247,24 +247,34 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 
 	cmd = exec.Command("ip", "link", "set", containerVethName, "address", macAddr)
 	if err := cmd.Run(); err != nil {
-		exec.Command("ip", "link", "del", localVethName).Run()
+		if err = exec.Command("ip", "link", "del", localVethName).Run(); err != nil {
+			log.Printf("Warning: failed to clean up veth pair after MAC set failure: %v", err)
+		}
 		return nil, fmt.Errorf("failed to set MAC address: %w", err)
 	}
 
 	cmd = exec.Command("ip", "link", "set", localVethName, "up")
 	if err := cmd.Run(); err != nil {
-		exec.Command("ip", "link", "del", localVethName).Run()
+		if err := exec.Command("ip", "link", "del", localVethName).Run(); err != nil {
+			log.Printf("Warning: failed to clean up veth pair after local veth set up failure: %v", err)
+		}
 		return nil, fmt.Errorf("failed to bring up host veth: %w", err)
 	}
 
 	ovsPortName := localVethName
 	if err := d.ovs.AddPortToBridge(d.bridge, ovsPortName, localVethName, portName); err != nil {
-		exec.Command("ip", "link", "del", localVethName).Run()
+		if err := exec.Command("ip", "link", "del", localVethName).Run(); err != nil {
+			log.Printf("Warning: failed to clean up veth pair after OVS port add failure: %v", err)
+		}
 		return nil, fmt.Errorf("failed to add veth to OVS: %w", err)
 	}
 
-	exec.Command("ethtool", "-K", localVethName, "tx", "off").Run()
-	exec.Command("ethtool", "-K", containerVethName, "tx", "off").Run()
+	if err := exec.Command("ethtool", "-K", localVethName, "tx", "off").Run(); err != nil {
+		log.Printf("Warning: failed to disable tx offloading on host veth: %v", err)
+	}
+	if err := exec.Command("ethtool", "-K", containerVethName, "tx", "off").Run(); err != nil {
+		log.Printf("Warning: failed to disable tx offloading on container veth: %v", err)
+	}
 
 	log.Printf("Join complete: returning gateway %s", gateway)
 	return &network.JoinResponse{
@@ -477,11 +487,12 @@ func envOrDefault(key string, defaultValue string) string {
 	return defaultValue
 }
 
+// DockerPluginSocket is the path where the plugin will listen for Docker API calls.
+const DockerPluginSocket = "/run/docker/plugins/ovn.sock"
+
 func main() {
 	bridge := envOrDefault("OVN_BRIDGE", "br-int")
 	ovsSocket := envOrDefault("OVS_SOCKET", "unix:/var/run/openvswitch/db.sock")
-
-	const DOCKER_PLUGIN_SOCKET = "/run/docker/plugins/ovn.sock"
 
 	ctx := context.Background()
 
@@ -496,7 +507,7 @@ func main() {
 		log.Fatalf("Failed to create OVS DB model: %v", err)
 	}
 
-	var discartLogger logr.Logger = logr.Discard()
+	discartLogger := logr.Discard()
 	ovsClient, err := client.NewOVSDBClient(
 		ovsDBModel,
 		client.WithEndpoint(ovsSocket),
@@ -563,16 +574,18 @@ func main() {
 
 	driver := NewOVNDriver(bridge, ovsSocket, ovsAPI, ovnAPI)
 
-	pluginDir := filepath.Dir(DOCKER_PLUGIN_SOCKET)
+	pluginDir := filepath.Dir(DockerPluginSocket)
 	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
 		log.Fatalf("Failed to create plugin directory: %v", err)
 	}
 
-	os.Remove(DOCKER_PLUGIN_SOCKET)
+	if err := os.Remove(DockerPluginSocket); err != nil && !os.IsNotExist(err) {
+		log.Fatalf("Failed to remove existing plugin socket: %v", err)
+	}
 
 	handler := network.NewHandler(driver)
-	log.Printf("Starting OVN plugin on %s", DOCKER_PLUGIN_SOCKET)
-	if err := handler.ServeUnix(DOCKER_PLUGIN_SOCKET, 0); err != nil {
+	log.Printf("Starting OVN plugin on %s", DockerPluginSocket)
+	if err := handler.ServeUnix(DockerPluginSocket, 0); err != nil {
 		log.Fatalf("Failed to start plugin: %v", err)
 	}
 }

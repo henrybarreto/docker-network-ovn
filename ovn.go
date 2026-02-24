@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"github.com/ovn-org/libovsdb/client"
@@ -11,7 +12,6 @@ import (
 	"github.com/ovn-org/libovsdb/ovsdb"
 )
 
-// OVN Northbound Database Models
 type LogicalSwitch struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Name        string            `ovsdb:"name"`
@@ -122,12 +122,7 @@ func logicalSwitchPortAddressHasIP(address string, ipAddr string) bool {
 		return true
 	}
 	parts := strings.Fields(address)
-	for _, part := range parts {
-		if part == ipAddr {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(parts, ipAddr)
 }
 
 // GetLogicalSwitch returns a logical switch by name

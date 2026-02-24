@@ -11,7 +11,6 @@ import (
 	"github.com/ovn-org/libovsdb/ovsdb"
 )
 
-// OVS Database Models
 type Bridge struct {
 	UUID  string   `ovsdb:"_uuid"`
 	Name  string   `ovsdb:"name"`
