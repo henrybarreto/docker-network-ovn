@@ -40,7 +40,8 @@ func NewOVNAPI(c client.Client, ctx context.Context) *OVNAPI {
 	return &OVNAPI{client: c, ctx: ctx}
 }
 
-func (o *OVNAPI) findLogicalSwitch(name string) (*LogicalSwitch, bool, error) {
+// GetSwitch returns a logical switch by name
+func (o *OVNAPI) GetSwitch(name string) (*LogicalSwitch, bool, error) {
 	list := []LogicalSwitch{}
 	err := o.client.WhereCache(func(ls *LogicalSwitch) bool {
 		return ls.Name == name
@@ -54,7 +55,8 @@ func (o *OVNAPI) findLogicalSwitch(name string) (*LogicalSwitch, bool, error) {
 	return &list[0], true, nil
 }
 
-func (o *OVNAPI) findLogicalSwitchPort(name string) (*LogicalSwitchPort, bool, error) {
+// GetPort returns a logical switch port by name
+func (o *OVNAPI) GetPort(name string) (*LogicalSwitchPort, bool, error) {
 	list := []LogicalSwitchPort{}
 	err := o.client.WhereCache(func(lsp *LogicalSwitchPort) bool {
 		return lsp.Name == name
@@ -68,7 +70,8 @@ func (o *OVNAPI) findLogicalSwitchPort(name string) (*LogicalSwitchPort, bool, e
 	return &list[0], true, nil
 }
 
-func (o *OVNAPI) findLogicalSwitchBySubnet(subnet string) (*LogicalSwitch, bool, error) {
+// GetSwitchBySubnet returns a logical switch with matching docker:subnet
+func (o *OVNAPI) GetSwitchBySubnet(subnet string) (*LogicalSwitch, bool, error) {
 	list := []LogicalSwitch{}
 	err := o.client.WhereCache(func(ls *LogicalSwitch) bool {
 		return ls.OtherConfig != nil && ls.OtherConfig["docker:subnet"] == subnet
@@ -82,8 +85,9 @@ func (o *OVNAPI) findLogicalSwitchBySubnet(subnet string) (*LogicalSwitch, bool,
 	return &list[0], true, nil
 }
 
-func (o *OVNAPI) findLogicalSwitchPortByIP(switchName string, ipAddr string) (*LogicalSwitchPort, bool, error) {
-	ls, found, err := o.findLogicalSwitch(switchName)
+// GetPortByIP returns a logical switch port on a switch matching an IP
+func (o *OVNAPI) GetPortByIP(switchName string, ipAddr string) (*LogicalSwitchPort, bool, error) {
+	ls, found, err := o.GetSwitch(switchName)
 	if err != nil {
 		return nil, false, err
 	}
@@ -102,7 +106,7 @@ func (o *OVNAPI) findLogicalSwitchPortByIP(switchName string, ipAddr string) (*L
 			return false
 		}
 		for _, addr := range lsp.Addresses {
-			if logicalSwitchPortAddressHasIP(addr, ipAddr) {
+			if addressHasIP(addr, ipAddr) {
 				return true
 			}
 		}
@@ -117,7 +121,7 @@ func (o *OVNAPI) findLogicalSwitchPortByIP(switchName string, ipAddr string) (*L
 	return &list[0], true, nil
 }
 
-func logicalSwitchPortAddressHasIP(address string, ipAddr string) bool {
+func addressHasIP(address string, ipAddr string) bool {
 	if address == ipAddr {
 		return true
 	}
@@ -125,33 +129,13 @@ func logicalSwitchPortAddressHasIP(address string, ipAddr string) bool {
 	return slices.Contains(parts, ipAddr)
 }
 
-// GetLogicalSwitch returns a logical switch by name
-func (o *OVNAPI) GetLogicalSwitch(name string) (*LogicalSwitch, bool, error) {
-	return o.findLogicalSwitch(name)
-}
-
-// GetLogicalSwitchPort returns a logical switch port by name
-func (o *OVNAPI) GetLogicalSwitchPort(name string) (*LogicalSwitchPort, bool, error) {
-	return o.findLogicalSwitchPort(name)
-}
-
-// GetLogicalSwitchBySubnet returns a logical switch with matching docker:subnet
-func (o *OVNAPI) GetLogicalSwitchBySubnet(subnet string) (*LogicalSwitch, bool, error) {
-	return o.findLogicalSwitchBySubnet(subnet)
-}
-
-// GetLogicalSwitchPortByIP returns a logical switch port on a switch matching an IP
-func (o *OVNAPI) GetLogicalSwitchPortByIP(switchName string, ipAddr string) (*LogicalSwitchPort, bool, error) {
-	return o.findLogicalSwitchPortByIP(switchName, ipAddr)
-}
-
 // Transact executes a set of OVN Northbound operations
 func (o *OVNAPI) Transact(ops ...ovsdb.Operation) ([]ovsdb.OperationResult, error) {
 	return o.client.Transact(o.ctx, ops...)
 }
 
-// CreateLogicalSwitch creates a logical switch
-func (o *OVNAPI) CreateLogicalSwitch(name string, otherConfig map[string]string) error {
+// CreateSwitch creates a logical switch
+func (o *OVNAPI) CreateSwitch(name string, otherConfig map[string]string) error {
 	ls := &LogicalSwitch{
 		Name:        name,
 		OtherConfig: otherConfig,
@@ -178,9 +162,9 @@ func (o *OVNAPI) CreateLogicalSwitch(name string, otherConfig map[string]string)
 	return nil
 }
 
-// DeleteLogicalSwitch deletes a logical switch if it exists
-func (o *OVNAPI) DeleteLogicalSwitch(name string) error {
-	ls, found, err := o.findLogicalSwitch(name)
+// DeleteSwitch deletes a logical switch if it exists
+func (o *OVNAPI) DeleteSwitch(name string) error {
+	ls, found, err := o.GetSwitch(name)
 	if err != nil {
 		return err
 	}
@@ -207,8 +191,8 @@ func (o *OVNAPI) DeleteLogicalSwitch(name string) error {
 	return nil
 }
 
-// MutateLogicalSwitchOtherConfigOp builds a mutation operation on a switch other_config
-func (o *OVNAPI) MutateLogicalSwitchOtherConfigOp(ls *LogicalSwitch, mutator ovsdb.Mutator, values map[string]string) ([]ovsdb.Operation, error) {
+// MutateConfigOp builds a mutation operation on a switch other_config
+func (o *OVNAPI) MutateConfigOp(ls *LogicalSwitch, mutator ovsdb.Mutator, values map[string]string) ([]ovsdb.Operation, error) {
 	return o.client.Where(ls).Mutate(ls, model.Mutation{
 		Field:   &ls.OtherConfig,
 		Mutator: mutator,
@@ -216,18 +200,18 @@ func (o *OVNAPI) MutateLogicalSwitchOtherConfigOp(ls *LogicalSwitch, mutator ovs
 	})
 }
 
-// CreateLogicalSwitchPortOp builds an operation to create a logical switch port
-func (o *OVNAPI) CreateLogicalSwitchPortOp(lsp *LogicalSwitchPort) ([]ovsdb.Operation, error) {
+// CreatePortOp builds an operation to create a logical switch port
+func (o *OVNAPI) CreatePortOp(lsp *LogicalSwitchPort) ([]ovsdb.Operation, error) {
 	return o.client.Create(lsp)
 }
 
-// DeleteLogicalSwitchPortOp builds an operation to delete a logical switch port
-func (o *OVNAPI) DeleteLogicalSwitchPortOp(lsp *LogicalSwitchPort) ([]ovsdb.Operation, error) {
+// DeletePortOp builds an operation to delete a logical switch port
+func (o *OVNAPI) DeletePortOp(lsp *LogicalSwitchPort) ([]ovsdb.Operation, error) {
 	return o.client.Where(lsp).Delete()
 }
 
-// MutateLogicalSwitchPortsOp builds a mutation operation on a switch ports list
-func (o *OVNAPI) MutateLogicalSwitchPortsOp(ls *LogicalSwitch, mutator ovsdb.Mutator, portUUIDs []string) ([]ovsdb.Operation, error) {
+// MutatePortsOp builds a mutation operation on a switch ports list
+func (o *OVNAPI) MutatePortsOp(ls *LogicalSwitch, mutator ovsdb.Mutator, portUUIDs []string) ([]ovsdb.Operation, error) {
 	return o.client.Where(ls).Mutate(ls, model.Mutation{
 		Field:   &ls.Ports,
 		Mutator: mutator,

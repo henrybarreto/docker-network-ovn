@@ -45,11 +45,10 @@ func NewOVSAPI(c client.Client, ctx context.Context) *OVSAPI {
 	return &OVSAPI{client: c, ctx: ctx}
 }
 
-// GetOVNNBConnection reads OVN NB connection from OVS database
-func (o *OVSAPI) GetOVNNBConnection() (string, error) {
-	// List all Open_vSwitch entries
+// NBConnection reads OVN NB connection from OVS database
+func (o *OVSAPI) NBConnection() (string, error) {
 	ovsList := []OpenvSwitch{}
-	err := o.client.List(o.ctx, &ovsList)
+	err := o.client.WhereCache(func(_ *OpenvSwitch) bool { return true }).List(o.ctx, &ovsList)
 	if err != nil {
 		return "", fmt.Errorf("failed to list Open_vSwitch table: %w", err)
 	}
@@ -57,13 +56,10 @@ func (o *OVSAPI) GetOVNNBConnection() (string, error) {
 	if len(ovsList) > 0 {
 		openvSwitch := &ovsList[0]
 
-		possibleKeys := []string{
-			"ovn-nb",
-		}
-
-		for _, key := range possibleKeys {
+		// Try common keys used by different OVN deployment tools.
+		for _, key := range []string{"ovn-nb", "ovn-remote"} {
 			if nbConn, ok := openvSwitch.ExternalIDs[key]; ok && nbConn != "" {
-				normalized := normalizeOVNConnection(nbConn)
+				normalized := normalizeConn(nbConn)
 				log.Printf("Found OVN NB connection: %s (key: %s, normalized: %s)", nbConn, key, normalized)
 				return normalized, nil
 			}
@@ -75,8 +71,8 @@ func (o *OVSAPI) GetOVNNBConnection() (string, error) {
 	return defaultConnection, nil
 }
 
-// normalizeOVNConnection ensures the connection string has a proper scheme
-func normalizeOVNConnection(conn string) string {
+// normalizeConn ensures the connection string has a proper scheme
+func normalizeConn(conn string) string {
 	if strings.HasPrefix(conn, "unix:") || strings.HasPrefix(conn, "tcp:") ||
 		strings.HasPrefix(conn, "ssl:") || strings.HasPrefix(conn, "ptcp:") ||
 		strings.HasPrefix(conn, "pssl:") {
@@ -188,66 +184,56 @@ func (o *OVSAPI) RemovePort(bridgeName string, portName string) error {
 
 	port := &portList[0]
 
+	// Build all operations for a single atomic transaction: remove the port UUID
+	// from the bridge, delete the port record, and delete the interface record.
+	var allOps []ovsdb.Operation
+
 	bridge, found, err := o.findBridge(bridgeName)
 	if err != nil {
 		return err
 	}
-	if !found {
-		log.Printf("Warning: bridge %s not found while removing port %s", bridgeName, portName)
-	} else {
+	if found {
 		bridgeMutateOps, err := o.client.Where(bridge).Mutate(bridge, model.Mutation{
 			Field:   &bridge.Ports,
 			Mutator: ovsdb.MutateOperationDelete,
 			Value:   []string{port.UUID},
 		})
 		if err != nil {
-			log.Printf("Warning: failed to create mutate operation for bridge: %v", err)
-		} else {
-			results, err := o.client.Transact(o.ctx, bridgeMutateOps...)
-			if err != nil {
-				log.Printf("Warning: failed to remove port from bridge: %v", err)
-			} else if len(results) > 0 && results[0].Error != "" {
-				log.Printf("Warning: failed to remove port from bridge: %s", results[0].Error)
-			}
+			return fmt.Errorf("failed to create bridge mutate operation: %w", err)
 		}
+		allOps = append(allOps, bridgeMutateOps...)
+	} else {
+		log.Printf("Warning: bridge %s not found while removing port %s", bridgeName, portName)
 	}
 
 	portOps, err := o.client.Where(port).Delete()
 	if err != nil {
-		return fmt.Errorf("failed to create delete operation for port: %w", err)
+		return fmt.Errorf("failed to create port delete operation: %w", err)
 	}
-
-	results, err := o.client.Transact(o.ctx, portOps...)
-	if err != nil {
-		return fmt.Errorf("failed to remove port: %w", err)
-	}
-
-	if len(results) > 0 && results[0].Error != "" {
-		return fmt.Errorf("failed to remove port: %s", results[0].Error)
-	}
-
-	log.Printf("Removed port %s from OVS", portName)
+	allOps = append(allOps, portOps...)
 
 	ifaceList := []Interface{}
-	err = o.client.WhereCache(func(i *Interface) bool {
+	if err = o.client.WhereCache(func(i *Interface) bool {
 		return i.Name == portName
-	}).List(o.ctx, &ifaceList)
-	if err == nil && len(ifaceList) > 0 {
-		iface := &ifaceList[0]
-		ifaceOps, err := o.client.Where(iface).Delete()
+	}).List(o.ctx, &ifaceList); err == nil && len(ifaceList) > 0 {
+		ifaceOps, err := o.client.Where(&ifaceList[0]).Delete()
 		if err != nil {
-			log.Printf("Warning: failed to create delete operation for interface: %v", err)
+			log.Printf("Warning: failed to create interface delete operation: %v", err)
 		} else {
-			results, err := o.client.Transact(o.ctx, ifaceOps...)
-			if err != nil {
-				log.Printf("Warning: failed to delete interface: %v", err)
-			} else if len(results) > 0 && results[0].Error != "" {
-				log.Printf("Warning: failed to delete interface: %s", results[0].Error)
-			} else {
-				log.Printf("Deleted interface %s from OVS", portName)
-			}
+			allOps = append(allOps, ifaceOps...)
 		}
 	}
 
+	results, err := o.client.Transact(o.ctx, allOps...)
+	if err != nil {
+		return fmt.Errorf("failed to remove port %s: %w", portName, err)
+	}
+	for _, res := range results {
+		if res.Error != "" {
+			return fmt.Errorf("transaction error removing port %s: %s", portName, res.Error)
+		}
+	}
+
+	log.Printf("Removed port %s from OVS bridge %s", portName, bridgeName)
 	return nil
 }
