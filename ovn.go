@@ -74,7 +74,7 @@ func (o *OVNAPI) GetPort(name string) (*LogicalSwitchPort, bool, error) {
 func (o *OVNAPI) GetSwitchBySubnet(subnet string) (*LogicalSwitch, bool, error) {
 	list := []LogicalSwitch{}
 	err := o.client.WhereCache(func(ls *LogicalSwitch) bool {
-		return ls.OtherConfig != nil && ls.OtherConfig["docker:subnet"] == subnet
+		return ls.OtherConfig != nil && ls.OtherConfig[KeyDockerSubnet] == subnet
 	}).List(o.ctx, &list)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to list logical switches by subnet: %w", err)

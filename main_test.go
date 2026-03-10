@@ -42,8 +42,8 @@ func TestGenerateMAC(t *testing.T) {
 
 func TestVethName(t *testing.T) {
 	name := vethName("550e8400-e29b-41d4-a716-446655440000")
-	if !strings.HasPrefix(name, "veth") {
-		t.Errorf("vethName must start with 'veth', got %s", name)
+	if !strings.HasPrefix(name, DefaultVethPrefix) {
+		t.Errorf("vethName must start with %q, got %s", DefaultVethPrefix, name)
 	}
 	if len(name) > 15 {
 		t.Errorf("vethName exceeds Linux 15-char limit: len=%d name=%s", len(name), name)
@@ -110,7 +110,7 @@ func TestAddressHasIP(t *testing.T) {
 }
 
 func TestMetaKey(t *testing.T) {
-	key := metaKey("my-endpoint-id", "mac")
+	key := metaKey("my-endpoint-id", MetaKeyMAC)
 	expected := "docker:endpoint:my-endpoint-id:mac"
 	if key != expected {
 		t.Errorf("metaKey = %q, want %q", key, expected)

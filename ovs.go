@@ -50,14 +50,14 @@ func (o *OVSAPI) NBConnection() (string, error) {
 	ovsList := []OpenvSwitch{}
 	err := o.client.WhereCache(func(_ *OpenvSwitch) bool { return true }).List(o.ctx, &ovsList)
 	if err != nil {
-		return "", fmt.Errorf("failed to list Open_vSwitch table: %w", err)
+		return "", fmt.Errorf("failed to list %s table: %w", TableOpenvSwitch, err)
 	}
 
 	if len(ovsList) > 0 {
 		openvSwitch := &ovsList[0]
 
 		// Try common keys used by different OVN deployment tools.
-		for _, key := range []string{"ovn-nb", "ovn-remote"} {
+		for _, key := range []string{KeyOVNNB, KeyOVNRemote} {
 			if nbConn, ok := openvSwitch.ExternalIDs[key]; ok && nbConn != "" {
 				normalized := normalizeConn(nbConn)
 				log.Printf("Found OVN NB connection: %s (key: %s, normalized: %s)", nbConn, key, normalized)
@@ -66,7 +66,7 @@ func (o *OVSAPI) NBConnection() (string, error) {
 		}
 	}
 
-	defaultConnection := "unix:/var/run/ovn/ovnnb_db.sock"
+	defaultConnection := DefaultOVNNBSocket
 	log.Printf("OVN NB connection not found in external_ids, using default: %s", defaultConnection)
 	return defaultConnection, nil
 }
@@ -114,15 +114,15 @@ func (o *OVSAPI) AddPortToBridge(bridgeName string, ovsPortName string, interfac
 		return fmt.Errorf("bridge %s not found", bridgeName)
 	}
 
-	ifaceUUID := fmt.Sprintf("iface_named_%s", interfaceName)
-	portUUID := fmt.Sprintf("port_named_%s", ovsPortName)
+	ifaceUUID := fmt.Sprintf("%s%s", NamedIfacePrefix, interfaceName)
+	portUUID := fmt.Sprintf("%s%s", NamedPortPrefix, ovsPortName)
 
 	iface := &Interface{
 		UUID: ifaceUUID,
 		Name: interfaceName,
 		Type: "",
 		ExternalIDs: map[string]string{
-			"iface-id": ifaceID,
+			KeyIfaceID: ifaceID,
 		},
 	}
 
