@@ -1,21 +1,23 @@
-package main
+package constants
+
+import (
+	"log/slog"
+	"os"
+)
+
+var Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+func SetLogger(l *slog.Logger) {
+	Logger = l
+}
 
 const (
-	// Environment variable names
-	EnvOVNBridge = "OVN_BRIDGE"
-	EnvOVSSocket = "OVS_SOCKET"
-
 	// Default values
-	DefaultOVNBridge      = "br-int"
-	DefaultOVSSocket      = "unix:/var/run/openvswitch/db.sock"
-	DefaultOVNNBSocket    = "unix:/var/run/ovn/ovnnb_db.sock"
-	DefaultVethPrefix     = "veth"
-	DefaultDstPrefix      = "eth"
-	ContainerVethSuffix   = "_c"
+	DefaultOVNBridge   = "br-int"
+	DefaultOVSSocket   = "unix:/var/run/openvswitch/db.sock"
+	DefaultOVNNBSocket = "unix:/var/run/ovn/ovnnb_db.sock"
 
-	// Resource name prefixes/formats
-	SwitchNamePrefix = "ls-"
-	PortNamePrefix   = "lsp-"
+	// Resource name prefixes
 	NamedUUIDPrefix  = "lsp_named_"
 	NamedIfacePrefix = "iface_named_"
 	NamedPortPrefix  = "port_named_"
@@ -26,11 +28,6 @@ const (
 	KeyDockerGateway  = "docker:gateway"
 	KeyDockerEndpoint = "docker:endpoint"
 	KeyIfaceID        = "iface-id"
-
-	// Metadata format strings
-	MetaKeyFormat = "docker:endpoint:%s:%s"
-	MetaKeyMAC    = "mac"
-	MetaKeyIP     = "ip"
 
 	// OVSDB Database and Table names
 	DBOVS                  = "Open_vSwitch"

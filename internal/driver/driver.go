@@ -1,36 +1,32 @@
-package main
+package driver
 
 import (
-	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
-	"log"
 	"net"
-	"os"
 	"os/exec"
-	"os/signal"
-	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/docker/go-plugins-helpers/network"
-	"github.com/go-logr/logr"
-	"github.com/ovn-org/libovsdb/client"
-	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
+
+	"docker-network-ovn/internal/constants"
+	"docker-network-ovn/internal/ipam"
+	netutils "docker-network-ovn/internal/network"
+	"docker-network-ovn/internal/ovn"
+	"docker-network-ovn/internal/ovs"
 )
 
 // OVNDriver implements the Docker network driver interface
 type OVNDriver struct {
-	ovs       *OVSAPI
-	ovn       *OVNAPI
+	ovs       *ovs.OVSAPI
+	ovn       *ovn.OVNAPI
 	bridge    string
 	ovsSocket string
 }
 
 // NewOVNDriver creates a new OVN driver instance
-func NewOVNDriver(ovnBridge, ovsSocket string, ovsAPI *OVSAPI, ovnAPI *OVNAPI) *OVNDriver {
+func NewOVNDriver(ovnBridge, ovsSocket string, ovsAPI *ovs.OVSAPI, ovnAPI *ovn.OVNAPI) *OVNDriver {
 	return &OVNDriver{
 		ovs:       ovsAPI,
 		ovn:       ovnAPI,
@@ -41,7 +37,7 @@ func NewOVNDriver(ovnBridge, ovsSocket string, ovsAPI *OVSAPI, ovnAPI *OVNAPI) *
 
 // GetCapabilities returns the driver's capabilities
 func (d *OVNDriver) GetCapabilities() (*network.CapabilitiesResponse, error) {
-	log.Println("GetCapabilities called")
+	constants.Logger.Info("GetCapabilities called")
 	return &network.CapabilitiesResponse{
 		Scope:             network.LocalScope,
 		ConnectivityScope: network.GlobalScope,
@@ -50,25 +46,15 @@ func (d *OVNDriver) GetCapabilities() (*network.CapabilitiesResponse, error) {
 
 // CreateNetwork creates a new OVN logical switch
 func (d *OVNDriver) CreateNetwork(r *network.CreateNetworkRequest) error {
-	log.Printf("CreateNetwork: %s", r.NetworkID)
+	constants.Logger.Info("CreateNetwork", "network_id", r.NetworkID)
 
 	if len(r.NetworkID) < 12 {
 		return fmt.Errorf("network ID too short: %q", r.NetworkID)
 	}
 
-	subnet := ""
-	gateway := ""
-	for _, ipam := range r.IPv4Data {
-		subnet = ipam.Pool
-		gateway = ipam.Gateway
-	}
-
-	if subnet == "" {
-		return fmt.Errorf("subnet not specified")
-	}
-
-	if _, _, err := net.ParseCIDR(subnet); err != nil {
-		return fmt.Errorf("invalid subnet CIDR %q: %w", subnet, err)
+	subnet, gateway, err := ipam.ValidateIPv4Data(r.IPv4Data, r.IPv6Data)
+	if err != nil {
+		return err
 	}
 
 	if existingLS, found, err := d.ovn.GetSwitchBySubnet(subnet); err != nil {
@@ -77,47 +63,38 @@ func (d *OVNDriver) CreateNetwork(r *network.CreateNetworkRequest) error {
 		return fmt.Errorf("subnet %s already in use by logical switch %s", subnet, existingLS.Name)
 	}
 
-	if gateway != "" && strings.Contains(gateway, "/") {
-		ip, _, err := net.ParseCIDR(gateway)
-		if err != nil {
-			return fmt.Errorf("invalid gateway address: %w", err)
-		}
-		gateway = ip.String()
-		log.Printf("Cleaned gateway from CIDR to IP: %s", gateway)
-	}
-
-	switchName := fmt.Sprintf("%s%s", SwitchNamePrefix, r.NetworkID[:12])
+	switchName := ovn.SwitchName(r.NetworkID)
 
 	otherConfig := map[string]string{
-		KeyDockerNetwork: r.NetworkID,
-		KeyDockerSubnet:  subnet,
-		KeyDockerGateway: gateway,
+		constants.KeyDockerNetwork: r.NetworkID,
+		constants.KeyDockerSubnet:  subnet,
+		constants.KeyDockerGateway: gateway,
 	}
 
 	if err := d.ovn.CreateSwitch(switchName, otherConfig); err != nil {
 		return err
 	}
 
-	log.Printf("Created network %s with subnet %s, gateway %s", switchName, subnet, gateway)
+	constants.Logger.Info("Created network", "switch", switchName, "subnet", subnet, "gateway", gateway)
 	return nil
 }
 
 // DeleteNetwork removes an OVN logical switch
 func (d *OVNDriver) DeleteNetwork(r *network.DeleteNetworkRequest) error {
-	log.Printf("DeleteNetwork: %s", r.NetworkID)
+	constants.Logger.Info("DeleteNetwork", "network_id", r.NetworkID)
 
 	if len(r.NetworkID) < 12 {
 		return fmt.Errorf("network ID too short: %q", r.NetworkID)
 	}
 
-	switchName := fmt.Sprintf("%s%s", SwitchNamePrefix, r.NetworkID[:12])
+	switchName := ovn.SwitchName(r.NetworkID)
 
 	return d.ovn.DeleteSwitch(switchName)
 }
 
 // CreateEndpoint creates a logical switch port for a container
 func (d *OVNDriver) CreateEndpoint(r *network.CreateEndpointRequest) (*network.CreateEndpointResponse, error) {
-	log.Printf("CreateEndpoint: %s on network %s", r.EndpointID, r.NetworkID)
+	constants.Logger.Info("CreateEndpoint", "endpoint_id", r.EndpointID, "network_id", r.NetworkID)
 
 	if len(r.NetworkID) < 12 {
 		return nil, fmt.Errorf("network ID too short: %q", r.NetworkID)
@@ -126,14 +103,14 @@ func (d *OVNDriver) CreateEndpoint(r *network.CreateEndpointRequest) (*network.C
 		return nil, fmt.Errorf("endpoint ID too short: %q", r.EndpointID)
 	}
 
-	switchName := fmt.Sprintf("%s%s", SwitchNamePrefix, r.NetworkID[:12])
+	switchName := ovn.SwitchName(r.NetworkID)
 	if _, found, err := d.ovn.GetSwitch(switchName); err != nil || !found {
 		return nil, fmt.Errorf("network %s not found", r.NetworkID)
 	}
 
 	macAddr := r.Interface.MacAddress
 	if macAddr == "" {
-		macAddr = generateMAC(r.EndpointID)
+		macAddr = netutils.GenerateMAC(r.EndpointID)
 	}
 	ipAddr := r.Interface.Address
 
@@ -149,7 +126,7 @@ func (d *OVNDriver) CreateEndpoint(r *network.CreateEndpointRequest) (*network.C
 		return nil, err
 	}
 
-	log.Printf("Created endpoint %s with MAC %s, IP %s", r.EndpointID[:12], macAddr, ipAddr)
+	constants.Logger.Info("Created endpoint", "endpoint_id", r.EndpointID[:12], "mac", macAddr, "ip", ipAddr)
 	return &network.CreateEndpointResponse{
 		Interface: &network.EndpointInterface{
 			MacAddress: macAddr,
@@ -159,19 +136,19 @@ func (d *OVNDriver) CreateEndpoint(r *network.CreateEndpointRequest) (*network.C
 
 // DeleteEndpoint removes endpoint metadata
 func (d *OVNDriver) DeleteEndpoint(r *network.DeleteEndpointRequest) error {
-	log.Printf("DeleteEndpoint: %s", r.EndpointID)
+	constants.Logger.Info("DeleteEndpoint", "endpoint_id", r.EndpointID)
 
 	if len(r.NetworkID) < 12 {
 		return fmt.Errorf("network ID too short: %q", r.NetworkID)
 	}
 
-	switchName := fmt.Sprintf("%s%s", SwitchNamePrefix, r.NetworkID[:12])
+	switchName := ovn.SwitchName(r.NetworkID)
 	return d.deleteMetadata(switchName, r.EndpointID)
 }
 
 // Join connects the endpoint to the network namespace
 func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) {
-	log.Printf("Join: endpoint %s", r.EndpointID)
+	constants.Logger.Info("Join", "endpoint_id", r.EndpointID, "network_id", r.NetworkID)
 
 	if len(r.NetworkID) < 12 {
 		return nil, fmt.Errorf("network ID too short: %q", r.NetworkID)
@@ -180,8 +157,8 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 		return nil, fmt.Errorf("endpoint ID too short: %q", r.EndpointID)
 	}
 
-	switchName := fmt.Sprintf("%s%s", SwitchNamePrefix, r.NetworkID[:12])
-	portName := fmt.Sprintf("%s%s-%s%s", PortNamePrefix, r.EndpointID[:12], SwitchNamePrefix, r.NetworkID[:12])
+	switchName := ovn.SwitchName(r.NetworkID)
+	portName := ovn.PortName(r.EndpointID, r.NetworkID)
 
 	macAddr, ipAddr, gateway, err := d.loadMetadata(switchName, r.EndpointID)
 	if err != nil {
@@ -190,8 +167,8 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 
 	addressStr := fmt.Sprintf("%s %s", macAddr, ipAddr)
 	externalIDs := map[string]string{
-		KeyDockerEndpoint: r.EndpointID,
-		KeyDockerNetwork:  r.NetworkID,
+		constants.KeyDockerEndpoint: r.EndpointID,
+		constants.KeyDockerNetwork:  r.NetworkID,
 	}
 
 	if existingLSP, found, err := d.ovn.GetPortByIP(switchName, ipAddr); err != nil {
@@ -215,7 +192,7 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 	}
 
 	enabled := true
-	lsp := &LogicalSwitchPort{
+	lsp := &ovn.LogicalSwitchPort{
 		Name:         portName,
 		Addresses:    []string{addressStr},
 		PortSecurity: []string{addressStr},
@@ -225,7 +202,7 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 	}
 
 	cleanPortName := strings.ReplaceAll(portName, "-", "_")
-	namedUUID := fmt.Sprintf("%s%s", NamedUUIDPrefix, cleanPortName)
+	namedUUID := fmt.Sprintf("%s%s", constants.NamedUUIDPrefix, cleanPortName)
 	lsp.UUID = namedUUID
 
 	lspOps, err := d.ovn.CreatePortOp(lsp)
@@ -250,12 +227,12 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 		}
 	}
 
-	log.Printf("Created logical switch port %s with address %s", portName, addressStr)
+	constants.Logger.Info("Created logical switch port", "port", portName, "address", addressStr)
 
-	localVethName := vethName(r.EndpointID)
-	containerVethName := localVethName + ContainerVethSuffix
+	localVethName := netutils.VethName(r.EndpointID)
+	containerVethName := localVethName + netutils.ContainerVethSuffix
 
-	log.Printf("Creating veth pair: %s <-> %s", localVethName, containerVethName)
+	constants.Logger.Info("Creating veth pair", "host_veth", localVethName, "container_veth", containerVethName)
 	cmd := exec.Command("ip", "link", "add", localVethName, "type", "veth", "peer", "name", containerVethName)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to create veth pair: %w: output: %s", err, strings.TrimSpace(string(out)))
@@ -264,7 +241,7 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 	cmd = exec.Command("ip", "link", "set", containerVethName, "address", macAddr)
 	if err := cmd.Run(); err != nil {
 		if cleanupErr := exec.Command("ip", "link", "del", localVethName).Run(); cleanupErr != nil {
-			log.Printf("Warning: failed to clean up veth pair after MAC set failure: %v", cleanupErr)
+			constants.Logger.Warn("Failed to clean up veth pair after MAC set failure", "err", cleanupErr)
 		}
 		return nil, fmt.Errorf("failed to set MAC address: %w", err)
 	}
@@ -272,33 +249,33 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 	cmd = exec.Command("ip", "link", "set", localVethName, "up")
 	if err := cmd.Run(); err != nil {
 		if err := exec.Command("ip", "link", "del", localVethName).Run(); err != nil {
-			log.Printf("Warning: failed to clean up veth pair after local veth set up failure: %v", err)
+			constants.Logger.Warn("Failed to clean up veth pair after local veth set up failure", "err", err)
 		}
 		return nil, fmt.Errorf("failed to bring up host veth: %w", err)
 	}
 
 	if err := d.ovs.AddPortToBridge(d.bridge, localVethName, localVethName, portName); err != nil {
 		if cleanupErr := exec.Command("ip", "link", "del", localVethName).Run(); cleanupErr != nil {
-			log.Printf("Warning: failed to clean up veth pair after OVS port add failure: %v", cleanupErr)
+			constants.Logger.Warn("Failed to clean up veth pair after OVS port add failure", "err", cleanupErr)
 		}
-		if rollbackErr := d.deletePort(switchName, portName); rollbackErr != nil {
-			log.Printf("Warning: failed to roll back OVN LSP %s after OVS failure: %v", portName, rollbackErr)
+		if rollbackErr := d.DeletePort(switchName, portName); rollbackErr != nil {
+			constants.Logger.Warn("Failed to roll back OVN LSP after OVS failure", "port", portName, "err", rollbackErr)
 		}
 		return nil, fmt.Errorf("failed to add veth to OVS: %w", err)
 	}
 
 	if err := exec.Command("ethtool", "-K", localVethName, "tx", "off").Run(); err != nil {
-		log.Printf("Warning: failed to disable tx offloading on host veth: %v", err)
+		constants.Logger.Warn("Failed to disable tx offloading on host veth", "err", err)
 	}
 	if err := exec.Command("ethtool", "-K", containerVethName, "tx", "off").Run(); err != nil {
-		log.Printf("Warning: failed to disable tx offloading on container veth: %v", err)
+		constants.Logger.Warn("Failed to disable tx offloading on container veth", "err", err)
 	}
 
-	log.Printf("Join complete: returning gateway %s", gateway)
+	constants.Logger.Info("Join complete", "endpoint_id", r.EndpointID, "gateway", gateway)
 	return &network.JoinResponse{
 		InterfaceName: network.InterfaceName{
 			SrcName:   containerVethName,
-			DstPrefix: DefaultDstPrefix,
+			DstPrefix: netutils.DefaultDstPrefix,
 		},
 		Gateway: gateway,
 	}, nil
@@ -306,7 +283,7 @@ func (d *OVNDriver) Join(r *network.JoinRequest) (*network.JoinResponse, error) 
 
 // Leave disconnects the endpoint
 func (d *OVNDriver) Leave(r *network.LeaveRequest) error {
-	log.Printf("Leave: endpoint %s", r.EndpointID)
+	constants.Logger.Info("Leave", "endpoint_id", r.EndpointID, "network_id", r.NetworkID)
 
 	if len(r.NetworkID) < 12 {
 		return fmt.Errorf("network ID too short: %q", r.NetworkID)
@@ -315,32 +292,28 @@ func (d *OVNDriver) Leave(r *network.LeaveRequest) error {
 		return fmt.Errorf("endpoint ID too short: %q", r.EndpointID)
 	}
 
-	switchName := fmt.Sprintf("%s%s", SwitchNamePrefix, r.NetworkID[:12])
-	portName := fmt.Sprintf("%s%s-%s%s", PortNamePrefix, r.EndpointID[:12], SwitchNamePrefix, r.NetworkID[:12])
+	switchName := ovn.SwitchName(r.NetworkID)
+	portName := ovn.PortName(r.EndpointID, r.NetworkID)
 
 	var errs []error
 
-	if err := d.deletePort(switchName, portName); err != nil {
-		log.Printf("Warning: failed to delete LSP %s: %v", portName, err)
+	if err := d.DeletePort(switchName, portName); err != nil {
+		constants.Logger.Warn("Failed to delete LSP", "port", portName, "err", err)
 		errs = append(errs, fmt.Errorf("delete LSP: %w", err))
 	}
 
-	localVethName := vethName(r.EndpointID)
+	localVethName := netutils.VethName(r.EndpointID)
 	if err := d.ovs.RemovePort(d.bridge, localVethName); err != nil {
-		log.Printf("Warning: failed to remove OVS port from OVS: %v", err)
+		constants.Logger.Warn("Failed to remove OVS port from OVS", "port", localVethName, "err", err)
 		errs = append(errs, fmt.Errorf("remove OVS port: %w", err))
 	}
 
 	if err := exec.Command("ip", "link", "del", localVethName).Run(); err != nil {
-		log.Printf("Warning: failed to delete veth pair: %v", err)
+		constants.Logger.Warn("Failed to delete veth pair", "veth", localVethName, "err", err)
 		errs = append(errs, fmt.Errorf("delete veth: %w", err))
 	}
 
 	return errors.Join(errs...)
-}
-
-func metaKey(endpointID string, suffix string) string {
-	return fmt.Sprintf(MetaKeyFormat, endpointID, suffix)
 }
 
 func (d *OVNDriver) storeMetadata(switchName string, endpointID string, macAddr string, ipAddr string) error {
@@ -352,8 +325,8 @@ func (d *OVNDriver) storeMetadata(switchName string, endpointID string, macAddr 
 		return fmt.Errorf("logical switch %s not found", switchName)
 	}
 
-	macKey := metaKey(endpointID, MetaKeyMAC)
-	ipKey := metaKey(endpointID, MetaKeyIP)
+	macKey := ovn.MetaKey(endpointID, ovn.MetaKeyMAC)
+	ipKey := ovn.MetaKey(endpointID, ovn.MetaKeyIP)
 	mutateOps, err := d.ovn.MutateConfigOp(ls, ovsdb.MutateOperationInsert, map[string]string{
 		macKey: macAddr,
 		ipKey:  ipAddr,
@@ -379,12 +352,12 @@ func (d *OVNDriver) deleteMetadata(switchName string, endpointID string) error {
 		return err
 	}
 	if !found {
-		log.Printf("Warning: logical switch %s not found while deleting endpoint metadata", switchName)
+		constants.Logger.Warn("Logical switch not found while deleting endpoint metadata", "switch", switchName)
 		return nil
 	}
 
-	macKey := metaKey(endpointID, MetaKeyMAC)
-	ipKey := metaKey(endpointID, MetaKeyIP)
+	macKey := ovn.MetaKey(endpointID, ovn.MetaKeyMAC)
+	ipKey := ovn.MetaKey(endpointID, ovn.MetaKeyIP)
 	mutateOps, err := d.ovn.MutateConfigOp(ls, ovsdb.MutateOperationDelete, map[string]string{
 		macKey: "",
 		ipKey:  "",
@@ -399,7 +372,7 @@ func (d *OVNDriver) deleteMetadata(switchName string, endpointID string) error {
 	if len(results) > 0 && results[0].Error != "" {
 		return fmt.Errorf("failed to delete endpoint metadata: %s", results[0].Error)
 	}
-	log.Printf("Deleted endpoint %s metadata", endpointID[:12])
+	constants.Logger.Info("Deleted endpoint metadata", "endpoint_id", endpointID[:12])
 	return nil
 }
 
@@ -412,18 +385,18 @@ func (d *OVNDriver) loadMetadata(switchName string, endpointID string) (string, 
 		return "", "", "", fmt.Errorf("logical switch %s not found", switchName)
 	}
 
-	macKey := metaKey(endpointID, MetaKeyMAC)
-	ipKey := metaKey(endpointID, MetaKeyIP)
+	macKey := ovn.MetaKey(endpointID, ovn.MetaKeyMAC)
+	ipKey := ovn.MetaKey(endpointID, ovn.MetaKeyIP)
 	macAddr := ls.OtherConfig[macKey]
 	ipAddr := ls.OtherConfig[ipKey]
-	gateway := ls.OtherConfig[KeyDockerGateway]
+	gateway := ls.OtherConfig[constants.KeyDockerGateway]
 	if macAddr == "" || ipAddr == "" {
 		return "", "", "", fmt.Errorf("endpoint metadata not found in logical switch %s", switchName)
 	}
 	return macAddr, ipAddr, gateway, nil
 }
 
-func (d *OVNDriver) deletePort(switchName string, portName string) error {
+func (d *OVNDriver) DeletePort(switchName string, portName string) error {
 	lsp, found, err := d.ovn.GetPort(portName)
 	if err != nil {
 		return err
@@ -436,7 +409,7 @@ func (d *OVNDriver) deletePort(switchName string, portName string) error {
 	if ls, found, err := d.ovn.GetSwitch(switchName); err == nil && found {
 		mutateOps, err := d.ovn.MutatePortsOp(ls, ovsdb.MutateOperationDelete, []string{lsp.UUID})
 		if err != nil {
-			log.Printf("Warning: failed to create mutate operation to remove port from switch: %v", err)
+			constants.Logger.Warn("Failed to create mutate operation to remove port from switch", "switch", switchName, "port", portName, "err", err)
 		} else {
 			ops = append(ops, mutateOps...)
 		}
@@ -458,7 +431,7 @@ func (d *OVNDriver) deletePort(switchName string, portName string) error {
 		}
 	}
 
-	log.Printf("Deleted logical switch port %s from OVN", portName)
+	constants.Logger.Info("Deleted logical switch port from OVN", "port", portName)
 	return nil
 }
 
@@ -474,175 +447,134 @@ func (d *OVNDriver) RevokeExternalConnectivity(r *network.RevokeExternalConnecti
 
 // DiscoverNew is called on new node discovery
 func (d *OVNDriver) DiscoverNew(r *network.DiscoveryNotification) error {
+	constants.Logger.Info("DiscoverNew", "notification", r)
 	return nil
 }
 
 // DiscoverDelete is called on node removal
 func (d *OVNDriver) DiscoverDelete(r *network.DiscoveryNotification) error {
+	constants.Logger.Info("DiscoverDelete", "notification", r)
 	return nil
 }
 
 // AllocateNetwork allocates network resources
 func (d *OVNDriver) AllocateNetwork(r *network.AllocateNetworkRequest) (*network.AllocateNetworkResponse, error) {
+	ipv4 := make([]*network.IPAMData, len(r.IPv4Data))
+	for i := range r.IPv4Data {
+		ipv4[i] = &r.IPv4Data[i]
+	}
+	ipv6 := make([]*network.IPAMData, len(r.IPv6Data))
+	for i := range r.IPv6Data {
+		ipv6[i] = &r.IPv6Data[i]
+	}
+	_, _, err := ipam.ValidateIPv4Data(ipv4, ipv6)
+	if err != nil {
+		return nil, err
+	}
 	return &network.AllocateNetworkResponse{}, nil
 }
 
 // FreeNetwork frees network resources
 func (d *OVNDriver) FreeNetwork(r *network.FreeNetworkRequest) error {
+	constants.Logger.Info("FreeNetwork", "network_id", r.NetworkID)
 	return nil
 }
 
 // EndpointInfo returns endpoint information
 func (d *OVNDriver) EndpointInfo(r *network.InfoRequest) (*network.InfoResponse, error) {
-	return &network.InfoResponse{}, nil
+	if len(r.NetworkID) < 12 {
+		return nil, fmt.Errorf("network ID too short: %q", r.NetworkID)
+	}
+	if len(r.EndpointID) < 12 {
+		return nil, fmt.Errorf("endpoint ID too short: %q", r.EndpointID)
+	}
+
+	sw := ovn.SwitchName(r.NetworkID)
+	mac, ip, gateway, err := d.loadMetadata(sw, r.EndpointID)
+	if err != nil {
+		return nil, err
+	}
+
+	port := ovn.PortName(r.EndpointID, r.NetworkID)
+	return &network.InfoResponse{
+		Value: map[string]string{
+			"mac":      mac,
+			"ip":       ip,
+			"gateway":  gateway,
+			"port":     port,
+			"iface-id": port,
+		},
+	}, nil
 }
 
-// generateMAC creates a locally-administered unicast MAC address from an
-// endpoint ID using SHA-256 so the result is deterministic and unique.
-func generateMAC(endpointID string) string {
-	sum := sha256.Sum256([]byte(endpointID))
-	// Set locally-administered (bit 1) and clear multicast (bit 0) in first octet.
-	return fmt.Sprintf("02:%02x:%02x:%02x:%02x:%02x",
-		sum[0], sum[1], sum[2], sum[3], sum[4])
-}
-
-// vethName derives a deterministic, collision-resistant veth host-side name
-// from the endpoint ID. Linux interface names are limited to 15 characters;
-// "veth" (4) + 8 hex chars from SHA-256 = 12 chars. The container-side name is
-// formed by appending "_c", so keeping the host veth to 12 chars ensures the
-// container veth stays within the 15-char limit.
-func vethName(endpointID string) string {
-	sum := sha256.Sum256([]byte(endpointID))
-	return fmt.Sprintf("%s%x", DefaultVethPrefix, sum[:4])
-}
-
-func envOrDefault(key string, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-// DockerPluginSocket is the path where the plugin will listen for Docker API calls.
-const DockerPluginSocket = "/run/docker/plugins/ovn.sock"
-
-func main() {
-	bridge := envOrDefault(EnvOVNBridge, DefaultOVNBridge)
-	ovsSocket := envOrDefault(EnvOVSSocket, DefaultOVSSocket)
-
-	ctx := context.Background()
-
-	ovsDBModel, err := model.NewClientDBModel(DBOVS,
-		map[string]model.Model{
-			TableBridge:       &Bridge{},
-			TablePort:         &Port{},
-			TableInterface:    &Interface{},
-			TableOpenvSwitch: &OpenvSwitch{},
-		})
+// Reconcile removes stale OVN LSPs and OVS ports that no longer have matching metadata.
+func (d *OVNDriver) Reconcile() error {
+	switches, err := d.ovn.ListSwitches()
 	if err != nil {
-		log.Fatalf("Failed to create OVS DB model: %v", err)
+		return err
 	}
-
-	discardLogger := logr.Discard()
-	ovsClient, err := client.NewOVSDBClient(
-		ovsDBModel,
-		client.WithEndpoint(ovsSocket),
-		client.WithLogger(&discardLogger),
-	)
+	ports, err := d.ovn.ListPorts()
 	if err != nil {
-		log.Fatalf("Failed to create OVS client: %v", err)
+		return err
 	}
 
-	if err := ovsClient.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect to OVS database: %v", err)
+	portByUUID := map[string]ovn.LogicalSwitchPort{}
+	for _, p := range ports {
+		portByUUID[p.UUID] = p
 	}
 
-	if _, err := ovsClient.Monitor(ctx,
-		ovsClient.NewMonitor(
-			client.WithTable(&Bridge{}),
-			client.WithTable(&Port{}),
-			client.WithTable(&Interface{}),
-			client.WithTable(&OpenvSwitch{}),
-		),
-	); err != nil {
-		log.Fatalf("Failed to monitor OVS database: %v", err)
-	}
-
-	ovsAPI := NewOVSAPI(ovsClient, ctx)
-
-	nbConn, err := ovsAPI.NBConnection()
-	if err != nil {
-		log.Fatalf("Failed to get OVN NB connection: %v", err)
-	}
-
-	log.Printf("Using OVN NB connection: %s", nbConn)
-
-	nbModel, err := model.NewClientDBModel(DBOVNNB,
-		map[string]model.Model{
-			TableLogicalSwitch:      &LogicalSwitch{},
-			TableLogicalSwitchPort: &LogicalSwitchPort{},
-		})
-	if err != nil {
-		log.Fatalf("Failed to create OVN NB DB model: %v", err)
-	}
-
-	nbClient, err := client.NewOVSDBClient(nbModel, client.WithEndpoint(nbConn))
-	if err != nil {
-		log.Fatalf("Failed to create OVN NB client: %v", err)
-	}
-
-	if err := nbClient.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect to OVN NB database: %v", err)
-	}
-
-	if _, err := nbClient.Monitor(ctx,
-		nbClient.NewMonitor(
-			client.WithTable(&LogicalSwitch{}),
-			client.WithTable(&LogicalSwitchPort{}),
-		),
-	); err != nil {
-		log.Fatalf("Failed to monitor OVN NB database: %v", err)
-	}
-
-	log.Println("Successfully connected to OVS and OVN databases")
-
-	defer ovsClient.Disconnect()
-	defer nbClient.Disconnect()
-
-	ovnAPI := NewOVNAPI(nbClient, ctx)
-
-	driver := NewOVNDriver(bridge, ovsSocket, ovsAPI, ovnAPI)
-
-	pluginDir := filepath.Dir(DockerPluginSocket)
-	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
-		log.Fatalf("Failed to create plugin directory: %v", err)
-	}
-
-	if err := os.Remove(DockerPluginSocket); err != nil && !os.IsNotExist(err) {
-		log.Fatalf("Failed to remove existing plugin socket: %v", err)
-	}
-	defer func() {
-		if err := os.Remove(DockerPluginSocket); err != nil && !os.IsNotExist(err) {
-			log.Printf("Warning: failed to remove plugin socket during cleanup: %v", err)
+	for _, ls := range switches {
+		for _, uuid := range ls.Ports {
+			p, ok := portByUUID[uuid]
+			if !ok {
+				continue
+			}
+			endpointID := p.ExternalIDs[constants.KeyDockerEndpoint]
+			if endpointID == "" {
+				continue
+			}
+			macKey := ovn.MetaKey(endpointID, ovn.MetaKeyMAC)
+			ipKey := ovn.MetaKey(endpointID, ovn.MetaKeyIP)
+			if ls.OtherConfig[macKey] == "" || ls.OtherConfig[ipKey] == "" {
+				constants.Logger.Warn("Removing OVN port missing metadata", "port", p.Name, "switch", ls.Name, "endpoint_id", endpointID)
+				if err := d.DeletePort(ls.Name, p.Name); err != nil {
+					return err
+				}
+			}
 		}
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		sig := <-sigCh
-		log.Printf("Received signal %s, shutting down", sig)
-		if err := os.Remove(DockerPluginSocket); err != nil && !os.IsNotExist(err) {
-			log.Printf("Warning: failed to remove plugin socket during shutdown: %v", err)
-		}
-		ovsClient.Disconnect()
-		nbClient.Disconnect()
-		os.Exit(0)
-	}()
-
-	handler := network.NewHandler(driver)
-	log.Printf("Starting OVN plugin on %s", DockerPluginSocket)
-	if err := handler.ServeUnix(DockerPluginSocket, 0); err != nil {
-		log.Fatalf("Failed to start plugin: %v", err)
 	}
+
+	ifaces, err := d.ovs.ListInterfaces()
+	if err != nil {
+		return err
+	}
+	ifaceByName := map[string]ovs.Interface{}
+	for _, iface := range ifaces {
+		ifaceByName[iface.Name] = iface
+	}
+
+	ovsPorts, err := d.ovs.ListPorts()
+	if err != nil {
+		return err
+	}
+	for _, port := range ovsPorts {
+		iface, ok := ifaceByName[port.Name]
+		if !ok {
+			continue
+		}
+		ifaceID := iface.ExternalIDs[constants.KeyIfaceID]
+		if ifaceID == "" {
+			continue
+		}
+		if _, found, err := d.ovn.GetPort(ifaceID); err != nil {
+			return err
+		} else if !found {
+			constants.Logger.Warn("Removing OVS port without OVN LSP", "port", port.Name, "iface_id", ifaceID)
+			if err := d.ovs.RemovePort(d.bridge, port.Name); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

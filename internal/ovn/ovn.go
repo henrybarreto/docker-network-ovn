@@ -1,15 +1,15 @@
-package main
+package ovn
 
 import (
 	"context"
 	"fmt"
-	"log"
-	"slices"
-	"strings"
 
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
+
+	"docker-network-ovn/internal/constants"
+	"docker-network-ovn/internal/network"
 )
 
 type LogicalSwitch struct {
@@ -38,6 +38,22 @@ type OVNAPI struct {
 
 func NewOVNAPI(c client.Client, ctx context.Context) *OVNAPI {
 	return &OVNAPI{client: c, ctx: ctx}
+}
+
+func (o *OVNAPI) ListSwitches() ([]LogicalSwitch, error) {
+	list := []LogicalSwitch{}
+	if err := o.client.WhereCache(func(_ *LogicalSwitch) bool { return true }).List(o.ctx, &list); err != nil {
+		return nil, fmt.Errorf("failed to list logical switches: %w", err)
+	}
+	return list, nil
+}
+
+func (o *OVNAPI) ListPorts() ([]LogicalSwitchPort, error) {
+	list := []LogicalSwitchPort{}
+	if err := o.client.WhereCache(func(_ *LogicalSwitchPort) bool { return true }).List(o.ctx, &list); err != nil {
+		return nil, fmt.Errorf("failed to list logical switch ports: %w", err)
+	}
+	return list, nil
 }
 
 // GetSwitch returns a logical switch by name
@@ -74,7 +90,7 @@ func (o *OVNAPI) GetPort(name string) (*LogicalSwitchPort, bool, error) {
 func (o *OVNAPI) GetSwitchBySubnet(subnet string) (*LogicalSwitch, bool, error) {
 	list := []LogicalSwitch{}
 	err := o.client.WhereCache(func(ls *LogicalSwitch) bool {
-		return ls.OtherConfig != nil && ls.OtherConfig[KeyDockerSubnet] == subnet
+		return ls.OtherConfig != nil && ls.OtherConfig[constants.KeyDockerSubnet] == subnet
 	}).List(o.ctx, &list)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to list logical switches by subnet: %w", err)
@@ -106,7 +122,7 @@ func (o *OVNAPI) GetPortByIP(switchName string, ipAddr string) (*LogicalSwitchPo
 			return false
 		}
 		for _, addr := range lsp.Addresses {
-			if addressHasIP(addr, ipAddr) {
+			if network.AddressHasIP(addr, ipAddr) {
 				return true
 			}
 		}
@@ -119,14 +135,6 @@ func (o *OVNAPI) GetPortByIP(switchName string, ipAddr string) (*LogicalSwitchPo
 		return nil, false, nil
 	}
 	return &list[0], true, nil
-}
-
-func addressHasIP(address string, ipAddr string) bool {
-	if address == ipAddr {
-		return true
-	}
-	parts := strings.Fields(address)
-	return slices.Contains(parts, ipAddr)
 }
 
 // Transact executes a set of OVN Northbound operations
@@ -169,7 +177,7 @@ func (o *OVNAPI) DeleteSwitch(name string) error {
 		return err
 	}
 	if !found {
-		log.Printf("Logical switch %s not found, assuming already deleted", name)
+		constants.Logger.Info("Logical switch already deleted", "switch", name)
 		return nil
 	}
 
@@ -187,7 +195,7 @@ func (o *OVNAPI) DeleteSwitch(name string) error {
 		return fmt.Errorf("failed to delete logical switch: %s", results[0].Error)
 	}
 
-	log.Printf("Deleted logical switch %s", name)
+	constants.Logger.Info("Deleted logical switch", "switch", name)
 	return nil
 }
 

@@ -1,14 +1,14 @@
-package main
+package ovs
 
 import (
 	"context"
 	"fmt"
-	"log"
-	"strings"
 
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
+
+	"docker-network-ovn/internal/constants"
 )
 
 type Bridge struct {
@@ -45,49 +45,46 @@ func NewOVSAPI(c client.Client, ctx context.Context) *OVSAPI {
 	return &OVSAPI{client: c, ctx: ctx}
 }
 
+func (o *OVSAPI) ListPorts() ([]Port, error) {
+	ports := []Port{}
+	if err := o.client.WhereCache(func(_ *Port) bool { return true }).List(o.ctx, &ports); err != nil {
+		return nil, fmt.Errorf("failed to list ports: %w", err)
+	}
+	return ports, nil
+}
+
+func (o *OVSAPI) ListInterfaces() ([]Interface, error) {
+	ifaces := []Interface{}
+	if err := o.client.WhereCache(func(_ *Interface) bool { return true }).List(o.ctx, &ifaces); err != nil {
+		return nil, fmt.Errorf("failed to list interfaces: %w", err)
+	}
+	return ifaces, nil
+}
+
 // NBConnection reads OVN NB connection from OVS database
 func (o *OVSAPI) NBConnection() (string, error) {
 	ovsList := []OpenvSwitch{}
 	err := o.client.WhereCache(func(_ *OpenvSwitch) bool { return true }).List(o.ctx, &ovsList)
 	if err != nil {
-		return "", fmt.Errorf("failed to list %s table: %w", TableOpenvSwitch, err)
+		return "", fmt.Errorf("failed to list %s table: %w", constants.TableOpenvSwitch, err)
 	}
 
 	if len(ovsList) > 0 {
 		openvSwitch := &ovsList[0]
 
 		// Try common keys used by different OVN deployment tools.
-		for _, key := range []string{KeyOVNNB, KeyOVNRemote} {
+		for _, key := range []string{constants.KeyOVNNB, constants.KeyOVNRemote} {
 			if nbConn, ok := openvSwitch.ExternalIDs[key]; ok && nbConn != "" {
-				normalized := normalizeConn(nbConn)
-				log.Printf("Found OVN NB connection: %s (key: %s, normalized: %s)", nbConn, key, normalized)
+				normalized := NormalizeConn(nbConn)
+				constants.Logger.Info("Found OVN NB connection", "raw", nbConn, "key", key, "normalized", normalized)
 				return normalized, nil
 			}
 		}
 	}
 
-	defaultConnection := DefaultOVNNBSocket
-	log.Printf("OVN NB connection not found in external_ids, using default: %s", defaultConnection)
+	defaultConnection := constants.DefaultOVNNBSocket
+	constants.Logger.Info("OVN NB connection not found in external_ids; using default", "conn", defaultConnection)
 	return defaultConnection, nil
-}
-
-// normalizeConn ensures the connection string has a proper scheme
-func normalizeConn(conn string) string {
-	if strings.HasPrefix(conn, "unix:") || strings.HasPrefix(conn, "tcp:") ||
-		strings.HasPrefix(conn, "ssl:") || strings.HasPrefix(conn, "ptcp:") ||
-		strings.HasPrefix(conn, "pssl:") {
-		return conn
-	}
-
-	if strings.HasPrefix(conn, "/") {
-		return "unix:" + conn
-	}
-
-	if strings.Contains(conn, ":") {
-		return "tcp:" + conn
-	}
-
-	return "unix:" + conn
 }
 
 func (o *OVSAPI) findBridge(name string) (*Bridge, bool, error) {
@@ -114,15 +111,15 @@ func (o *OVSAPI) AddPortToBridge(bridgeName string, ovsPortName string, interfac
 		return fmt.Errorf("bridge %s not found", bridgeName)
 	}
 
-	ifaceUUID := fmt.Sprintf("%s%s", NamedIfacePrefix, interfaceName)
-	portUUID := fmt.Sprintf("%s%s", NamedPortPrefix, ovsPortName)
+	ifaceUUID := fmt.Sprintf("%s%s", constants.NamedIfacePrefix, interfaceName)
+	portUUID := fmt.Sprintf("%s%s", constants.NamedPortPrefix, ovsPortName)
 
 	iface := &Interface{
 		UUID: ifaceUUID,
 		Name: interfaceName,
 		Type: "",
 		ExternalIDs: map[string]string{
-			KeyIfaceID: ifaceID,
+			constants.KeyIfaceID: ifaceID,
 		},
 	}
 
@@ -164,7 +161,7 @@ func (o *OVSAPI) AddPortToBridge(bridgeName string, ovsPortName string, interfac
 		}
 	}
 
-	log.Printf("Successfully added port %s to OVS bridge %s with iface-id=%s", ovsPortName, bridgeName, ifaceID)
+	constants.Logger.Info("Added port to OVS bridge", "port", ovsPortName, "bridge", bridgeName, "iface_id", ifaceID)
 	return nil
 }
 
@@ -178,7 +175,7 @@ func (o *OVSAPI) RemovePort(bridgeName string, portName string) error {
 		return fmt.Errorf("failed to list ports: %w", err)
 	}
 	if len(portList) == 0 {
-		log.Printf("Port %s not found in OVS, assuming already deleted", portName)
+		constants.Logger.Info("Port not found in OVS; assuming deleted", "port", portName)
 		return nil
 	}
 
@@ -203,7 +200,7 @@ func (o *OVSAPI) RemovePort(bridgeName string, portName string) error {
 		}
 		allOps = append(allOps, bridgeMutateOps...)
 	} else {
-		log.Printf("Warning: bridge %s not found while removing port %s", bridgeName, portName)
+		constants.Logger.Warn("Bridge not found while removing port", "bridge", bridgeName, "port", portName)
 	}
 
 	portOps, err := o.client.Where(port).Delete()
@@ -218,7 +215,7 @@ func (o *OVSAPI) RemovePort(bridgeName string, portName string) error {
 	}).List(o.ctx, &ifaceList); err == nil && len(ifaceList) > 0 {
 		ifaceOps, err := o.client.Where(&ifaceList[0]).Delete()
 		if err != nil {
-			log.Printf("Warning: failed to create interface delete operation: %v", err)
+			constants.Logger.Warn("Failed to create interface delete operation", "err", err)
 		} else {
 			allOps = append(allOps, ifaceOps...)
 		}
@@ -234,6 +231,6 @@ func (o *OVSAPI) RemovePort(bridgeName string, portName string) error {
 		}
 	}
 
-	log.Printf("Removed port %s from OVS bridge %s", portName, bridgeName)
+	constants.Logger.Info("Removed port from OVS bridge", "port", portName, "bridge", bridgeName)
 	return nil
 }
